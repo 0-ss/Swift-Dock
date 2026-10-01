@@ -45,6 +45,7 @@ ShellRoot {
     property bool showLabels: true       // hover tooltips
     property bool showIndicators: true   // dots under running apps
     property bool bounceOnLaunch: true
+    property bool showThumbs: true       // unpinned running apps show a live window thumbnail instead of their icon
     property int hideDelay: 450          // ms before the dock hides after the pointer leaves
     readonly property var accentChoices: [
         { name: "Blue",     c: "#0a84ff" }, { name: "Purple", c: "#bf5af2" },
@@ -1166,6 +1167,12 @@ ShellRoot {
                     }
                     SRow {
                         t: pal
+                        title: "Show window thumbnails"
+                        subtitle: "Open apps that aren't kept in the Dock appear as a live preview of their window"
+                        SSwitch { t: pal; checked: root.showThumbs; onToggled: v => root.showThumbs = v }
+                    }
+                    SRow {
+                        t: pal
                         title: "Show indicators for open applications"
                         SSwitch { t: pal; checked: root.showIndicators; onToggled: v => root.showIndicators = v }
                     }
@@ -1387,13 +1394,13 @@ ShellRoot {
         spacing = 6; margin = 6; cornerRadius = 18;
         darkMode = true; glassOpacity = 0.42; accent = "#0a84ff"; fontFamily = "Inter";
         hideMode = "smart"; hideDelay = 450; monitor = "";
-        showTrash = true; showLabels = true; showIndicators = true; bounceOnLaunch = true;
+        showTrash = true; showLabels = true; showIndicators = true; bounceOnLaunch = true; showThumbs = true;
     }
 
     // ── settings persistence (~/.config/macdock/settings.json) ──
     readonly property string settingsSig: [iconSize, magnification, magnificationEnabled, spacing, margin,
         cornerRadius, darkMode, glassOpacity, String(accent), fontFamily, hideMode, hideDelay, monitor,
-        showTrash, showLabels, showIndicators, bounceOnLaunch].join("|")
+        showTrash, showLabels, showIndicators, bounceOnLaunch, showThumbs].join("|")
     property bool settingsReady: false
     onSettingsSigChanged: if (settingsReady) saveTimer.restart()
     onShowTrashChanged: rebuild()
@@ -1405,7 +1412,7 @@ ShellRoot {
             darkMode: darkMode, glassOpacity: glassOpacity, accent: String(accent), fontFamily: fontFamily,
             hideMode: hideMode, hideDelay: hideDelay, monitor: monitor,
             showTrash: showTrash, showLabels: showLabels, showIndicators: showIndicators,
-            bounceOnLaunch: bounceOnLaunch
+            bounceOnLaunch: bounceOnLaunch, showThumbs: showThumbs
         };
         settingsStore.setText(JSON.stringify(o, null, 2));
     }
@@ -1414,7 +1421,7 @@ ShellRoot {
         if (!o || typeof o !== "object") return;
         var keys = ["iconSize", "magnification", "magnificationEnabled", "spacing", "margin", "cornerRadius",
                     "darkMode", "glassOpacity", "accent", "fontFamily", "hideMode", "hideDelay", "monitor",
-                    "showTrash", "showLabels", "showIndicators", "bounceOnLaunch"];
+                    "showTrash", "showLabels", "showIndicators", "bounceOnLaunch", "showThumbs"];
         for (var i = 0; i < keys.length; i++) {
             if (o[keys[i]] === undefined) continue;
             try { root[keys[i]] = o[keys[i]]; } catch (err) { }
@@ -1449,6 +1456,17 @@ ShellRoot {
         if (!icon) return Quickshell.iconPath("application-x-executable");
         if (icon.charAt(0) === "/") return "file://" + icon;
         return Quickshell.iconPath(icon, "application-x-executable");
+    }
+
+    // bumped (debounced) whenever windows open, close or change focus; thumbnails re-pick their window from it
+    property int windowTick: 0
+    Timer { id: tickDebounce; interval: 120; onTriggered: root.windowTick++ }
+
+    // the window an unpinned app is represented by: the focused one, else the first
+    function thumbWindow(key) {
+        var w = windowsFor(key);
+        for (var i = 0; i < w.length; i++) if (w[i].activated) return w[i];
+        return w.length > 0 ? w[0] : null;
     }
 
     function windowsFor(key) {
@@ -1670,7 +1688,7 @@ ShellRoot {
     }
     Connections {
         target: Hyprland
-        function onRawEvent(event) { busyDebounce.restart(); }
+        function onRawEvent(event) { busyDebounce.restart(); tickDebounce.restart(); }
     }
     Timer { id: busyDebounce; interval: 60; onTriggered: root.refreshBusy() }
 
@@ -1694,7 +1712,7 @@ ShellRoot {
 
     Connections {
         target: ToplevelManager.toplevels
-        function onValuesChanged() { root.rebuild(); settle.restart(); }
+        function onValuesChanged() { root.rebuild(); settle.restart(); tickDebounce.restart(); }
     }
     Connections {
         target: DesktopEntries.applications
@@ -1869,6 +1887,16 @@ ShellRoot {
                                 readonly property bool canDrag: !isSep && modelData.pinned === true && !modelData.special
                                 readonly property bool isDragged: ui.dragging && modelData.key === ui.dragKey
 
+                                // unpinned + running apps show a live thumbnail of their window instead of the app icon
+                                readonly property var thumbWin: {
+                                    root.windowTick;
+                                    if (!root.showThumbs || isSep || modelData.kind !== "app" || modelData.pinned
+                                        || modelData.special || !modelData.running) return null;
+                                    return root.thumbWindow(modelData.key);
+                                }
+                                readonly property bool useThumb: thumbWin !== null
+                                readonly property bool thumbReady: useThumb && (sv.hasContent === undefined || sv.hasContent === true)
+
                                 property real dx: {
                                     if (!ui.dragging || isSep) return 0;
                                     if (isDragged) return ui.dragDelta;
@@ -1926,7 +1954,7 @@ ShellRoot {
                                     asynchronous: true
                                 }
                                 MultiEffect {
-                                    visible: !cell.isSep
+                                    visible: !cell.isSep && !cell.thumbReady
                                     source: img
                                     anchors.fill: img
                                     shadowEnabled: true
@@ -1935,6 +1963,56 @@ ShellRoot {
                                     shadowBlur: 0.55
                                     shadowVerticalOffset: 3
                                     brightness: ma.pressed ? -0.3 : 0.0
+                                }
+
+                                // ── window thumbnail (same box as the icon, so magnification just works) ──
+                                Item {
+                                    id: th
+                                    anchors.fill: img
+                                    // kept (almost) opaque while loading so the capture isn't paused by the renderer
+                                    visible: cell.useThumb
+                                    opacity: cell.thumbReady ? 1 : 0.01
+
+                                    Rectangle {      // soft drop shadow
+                                        x: sv.x
+                                        y: sv.y + 3
+                                        width: sv.width
+                                        height: sv.height
+                                        radius: 5
+                                        color: Qt.rgba(0, 0, 0, 0.32)
+                                    }
+                                    ScreencopyView {
+                                        id: sv
+                                        anchors.centerIn: parent
+                                        captureSource: cell.thumbWin
+                                        live: !ui.tucked          // only keep capturing while the dock is on screen
+                                        readonly property real ar: (implicitWidth > 0 && implicitHeight > 0)
+                                                                   ? implicitWidth / implicitHeight : 4 / 3
+                                        width: Math.min(th.width, th.height * ar)
+                                        height: width / ar
+                                    }
+                                    Rectangle {      // thin frame + pressed dimming
+                                        anchors.fill: sv
+                                        radius: 3
+                                        color: ma.pressed ? Qt.rgba(0, 0, 0, 0.3) : "transparent"
+                                        border.width: 1
+                                        border.color: root.darkMode ? Qt.rgba(1, 1, 1, 0.28) : Qt.rgba(0, 0, 0, 0.28)
+                                    }
+                                }
+                                // small app icon in the corner, so you can tell which app the window belongs to
+                                Image {
+                                    id: badge
+                                    visible: cell.thumbReady
+                                    width: img.width * 0.46
+                                    height: width
+                                    x: img.x + img.width - width + 3
+                                    y: img.y + img.height - height + 3
+                                    source: img.source
+                                    sourceSize: Qt.size(Math.ceil(root.iconSize * root.magnification * 0.6),
+                                                        Math.ceil(root.iconSize * root.magnification * 0.6))
+                                    fillMode: Image.PreserveAspectFit
+                                    smooth: true
+                                    mipmap: true
                                 }
 
                                 Rectangle {
