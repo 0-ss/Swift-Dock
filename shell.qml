@@ -35,7 +35,7 @@ ShellRoot {
     property int cornerRadius: 18
     property int margin: 6
     property bool darkMode: true
-    property real glassOpacity: 0.42     // keep above the layerrule's ignore_alpha
+    property real glassOpacity: 0.42     // 0 = fully clear; below the layerrule's ignore_alpha (0.2) the blur turns off
     // "smart"  = hide while a non-floating window is open on that monitor's workspace
     // "always" = always auto-hide, "never" = always visible and reserves space
     property string hideMode: "smart"
@@ -1064,7 +1064,7 @@ ShellRoot {
                         subtitle: "How frosted the Dock's glass looks"
                         SSlider {
                             t: pal
-                            from: 0.25; to: 0.85; stepSize: 0.01
+                            from: 0.0; to: 0.85; stepSize: 0.01
                             value: root.glassOpacity
                             leftLabel: "Clear"; rightLabel: "Frosted"
                             onMoved: v => root.glassOpacity = v
@@ -1846,17 +1846,6 @@ ShellRoot {
                             color: "transparent"
                             border.width: 1
                             border.color: root.darkMode ? Qt.rgba(1, 1, 1, 0.22) : Qt.rgba(1, 1, 1, 0.45)
-
-                            Rectangle {
-                                anchors.fill: parent
-                                anchors.margins: 1
-                                radius: parent.radius - 1
-                                gradient: Gradient {
-                                    GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, root.darkMode ? 0.14 : 0.20) }
-                                    GradientStop { position: 0.45; color: Qt.rgba(1, 1, 1, 0.02) }
-                                    GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, root.darkMode ? 0.10 : 0.03) }
-                                }
-                            }
                         }
                     }
 
