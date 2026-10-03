@@ -1663,20 +1663,7 @@ ShellRoot {
         }
 
         var extras = [];
-        for (var r = 0; r < runOrder.length; r++) {
-            var runKey = runOrder[r].key;
-            var hasPreview = false;
-            if (showThumbs) {
-                for (var tw = 0; tw < tls.length; tw++) {
-                    if (tls[tw].appId && tls[tw].title !== "Dock Preferences"
-                            && keyOf(tls[tw].appId) === runKey) {
-                        hasPreview = true;
-                        break;
-                    }
-                }
-            }
-            if (!seen[runKey] && !hasPreview) extras.push(runOrder[r]);
-        }
+        for (var r = 0; r < runOrder.length; r++) if (!seen[runOrder[r].key]) extras.push(runOrder[r]);
         if (extras.length > 0 && list.length > 0) list.push({ kind: "sep" });
         for (var x = 0; x < extras.length; x++) {
             var e2 = lookup(extras[x].appId);
