@@ -59,7 +59,7 @@ ShellRoot {
     property bool showLabels: true       // hover tooltips
     property bool showIndicators: true   // dots under running apps
     property bool bounceOnLaunch: true
-    property bool showThumbs: true       // unpinned running apps show a live window thumbnail instead of their icon
+    property bool showThumbs: true       // open windows get a live preview cell next to the Trash
     property int hideDelay: 450          // ms before the dock hides after the pointer leaves
     readonly property var accentChoices: [
         { name: "Blue",     c: "#0a84ff" }, { name: "Purple", c: "#bf5af2" },
@@ -492,7 +492,7 @@ ShellRoot {
             { name: "Appearance",   glyph: "appearance", c1: "#636366", c2: "#1C1C1E",
               keys: "theme dark light mode accent color glass liquid apple style translucency blur corner radius font" },
             { name: "Behavior",     glyph: "behavior",   c1: "#4CD964", c2: "#26A844",
-              keys: "hide auto labels tooltip indicators bounce animate trash display monitor delay" },
+              keys: "hide auto labels tooltip indicators bounce animate trash display monitor delay window preview thumbnail" },
             { name: "Applications", glyph: "apps",       c1: "#FFB340", c2: "#FF9500",
               keys: "pinned apps keep remove reset" },
             { name: "About",        glyph: "about",      c1: "#A7A7AD", c2: "#7C7C82",
@@ -1204,8 +1204,8 @@ ShellRoot {
                     }
                     SRow {
                         t: pal
-                        title: "Show window thumbnails"
-                        subtitle: "Open apps that aren't kept in the Dock appear as a live preview of their window"
+                        title: "Show window previews"
+                        subtitle: "Open windows appear as live previews next to the Trash, each with its app's icon"
                         SSwitch { t: pal; checked: root.showThumbs; onToggled: v => root.showThumbs = v }
                     }
                     SRow {
@@ -1441,6 +1441,7 @@ ShellRoot {
     property bool settingsReady: false
     onSettingsSigChanged: if (settingsReady) saveTimer.restart()
     onShowTrashChanged: rebuild()
+    onShowThumbsChanged: rebuild()
 
     function saveSettings() {
         var o = {
@@ -1492,6 +1493,16 @@ ShellRoot {
         return (e ? e.id : appId).toLowerCase();
     }
 
+    // stable ids so a window's preview cell isn't rebuilt on every refresh
+    property var winIdList: []
+    property int winIdNext: 1
+    function winIdFor(tl) {
+        for (var i = 0; i < winIdList.length; i++) if (winIdList[i].tl === tl) return winIdList[i].id;
+        var id = winIdNext++;
+        winIdList.push({ tl: tl, id: id });
+        return id;
+    }
+
     function iconSrc(icon) {
         if (!icon) return Quickshell.iconPath("application-x-executable");
         if (icon.charAt(0) === "/") return "file://" + icon;
@@ -1519,6 +1530,7 @@ ShellRoot {
     }
 
     function activate(item, forceNew) {
+        if (item.kind === "win") { if (item.tl) item.tl.activate(); return; }
         if (item.special === "trash") {
             Quickshell.execDetached(["xdg-open", "trash:///"]);
             return;
@@ -1577,6 +1589,13 @@ ShellRoot {
 
     function menuFor(item) {
         var m = [];
+        if (item.kind === "win") {
+            m.push({ kind: "item", label: "Show", run: function () { activate(item, false); } });
+            m.push({ kind: "item", label: "Close", run: function () { if (item.tl) item.tl.close(); } });
+            m.push({ kind: "sep" });
+            m.push({ kind: "item", label: "Dock Preferences\u2026", run: function() { root.openPrefs(); } });
+            return m;
+        }
         if (item.special === "trash") {
             m.push({ kind: "item", label: "Open", run: function () { activate(item, false); } });
             m.push({ kind: "sep" });
@@ -1644,7 +1663,20 @@ ShellRoot {
         }
 
         var extras = [];
-        for (var r = 0; r < runOrder.length; r++) if (!seen[runOrder[r].key]) extras.push(runOrder[r]);
+        for (var r = 0; r < runOrder.length; r++) {
+            var runKey = runOrder[r].key;
+            var hasPreview = false;
+            if (showThumbs) {
+                for (var tw = 0; tw < tls.length; tw++) {
+                    if (tls[tw].appId && tls[tw].title !== "Dock Preferences"
+                            && keyOf(tls[tw].appId) === runKey) {
+                        hasPreview = true;
+                        break;
+                    }
+                }
+            }
+            if (!seen[runKey] && !hasPreview) extras.push(runOrder[r]);
+        }
         if (extras.length > 0 && list.length > 0) list.push({ kind: "sep" });
         for (var x = 0; x < extras.length; x++) {
             var e2 = lookup(extras[x].appId);
@@ -1654,8 +1686,31 @@ ShellRoot {
                         entry: e2, running: true, pinned: false });
         }
 
-        if (showTrash) {
+        // window previews: one cell per open window, in their own section next to the Trash
+        var winItems = [], liveWins = [];
+        if (showThumbs) {
+            for (var w = 0; w < tls.length; w++) {
+                var tl = tls[w];
+                if (!tl.appId || tl.title === "Dock Preferences") continue;
+                var e3 = lookup(tl.appId);
+                var wid = winIdFor(tl);
+                liveWins.push(tl);
+                winItems.push({ kind: "win", key: "win:" + wid, tl: tl,
+                                name: e3 ? e3.name : tl.appId,
+                                icon: e3 ? e3.icon : tl.appId.toLowerCase(),
+                                entry: null, running: false, pinned: false });
+            }
+        }
+        var keep = [];
+        for (var wi = 0; wi < winIdList.length; wi++) if (liveWins.indexOf(winIdList[wi].tl) >= 0) keep.push(winIdList[wi]);
+        winIdList = keep;
+
+        if (showTrash || winItems.length > 0) {
             list.push({ kind: "sep" });
+            for (var wj = 0; wj < winItems.length; wj++) list.push(winItems[wj]);
+        }
+        if (showTrash && winItems.length > 0) list.push({ kind: "sep" });
+        if (showTrash) {
             list.push({ kind: "app", key: "__trash", name: "Trash", icon: "user-trash",
                         entry: null, running: false, pinned: true, special: "trash" });
         }
@@ -1666,7 +1721,7 @@ ShellRoot {
             var it = list[n];
             it.nA = nA; it.nS = nS;
             if (it.kind === "sep") nS++; else nA++;
-            if (it.kind === "app") {
+            if (it.kind !== "sep") {
                 it.fresh = !firstBuild && !knownKeys[it.key];
                 nowKeys[it.key] = true;
             }
@@ -2191,13 +2246,9 @@ ShellRoot {
                                 readonly property bool canDrag: !isSep && modelData.pinned === true && !modelData.special
                                 readonly property bool isDragged: ui.dragging && modelData.key === ui.dragKey
 
-                                // unpinned + running apps show a live thumbnail of their window instead of the app icon
-                                readonly property var thumbWin: {
-                                    root.windowTick;
-                                    if (!root.showThumbs || isSep || modelData.kind !== "app" || modelData.pinned
-                                        || modelData.special || !modelData.running) return null;
-                                    return root.thumbWindow(modelData.key);
-                                }
+                                // app cells always show their plain icon; only window cells show a live preview
+                                // (with the app's icon as a badge), grouped next to the Trash
+                                readonly property var thumbWin: (!isSep && modelData.kind === "win") ? modelData.tl : null
                                 readonly property bool useThumb: thumbWin !== null
                                 readonly property bool thumbReady: useThumb && (sv.hasContent === undefined || sv.hasContent === true)
 
@@ -2355,7 +2406,7 @@ ShellRoot {
                                     Text {
                                         id: label
                                         anchors.centerIn: parent
-                                        text: cell.isSep ? "" : cell.modelData.name
+                                        text: cell.isSep ? "" : ((cell.modelData.kind === "win" && cell.modelData.tl && cell.modelData.tl.title) ? cell.modelData.tl.title : cell.modelData.name)
                                         color: "white"
                                         font.pixelSize: 13
                                         font.family: root.fontFamily
