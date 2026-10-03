@@ -9,6 +9,13 @@
 //   windowrule = float, title:^(Dock Preferences)$
 //   windowrule = center, title:^(Dock Preferences)$
 //
+// Dock style (Dock Preferences → Appearance):
+//   Normal Blur         – the original translucent tint; blur comes from the Hyprland layer rule below.
+//   Apple Liquid Glass  – real-time refraction shader (liquidglass.frag, next to this file). It is compiled
+//                         with `qsb` (package qt6-shadertools) on first use and cached in ~/.config/macdock/.
+//                         The backdrop it refracts is the wallpaper + the live windows behind the Dock;
+//                         set "wallpaperPath" in settings.json if the wallpaper isn't auto-detected.
+//
 // Hyprland (Lua) layer rule for the glass:
 //   hl.layer_rule({ name = "macdock", match = { namespace = "macdock" },
 //                   blur = true, ignore_alpha = 0.2, no_anim = true })
@@ -35,6 +42,13 @@ ShellRoot {
     property int cornerRadius: 18
     property int margin: 6
     property bool darkMode: true
+    property string dockStyle: "blur"   // "blur" = Normal Blur, "liquid" = Apple Liquid Glass
+    // Liquid Glass tuning (settings.json): rim = edge highlight, grain = noise, liquid = refraction depth
+    property real glassRim: 0.45
+    property real glassGrain: 0.03
+    property real glassLiquid: 1.0
+    property bool glassDebug: false       // settings.json only: draw the raw Liquid Glass backdrop texture
+    property string wallpaperPath: ""    // optional override for the wallpaper the Liquid Glass refracts
     property real glassOpacity: 0.42     // 0 = fully clear; below the layerrule's ignore_alpha (0.2) the blur turns off
     // "smart"  = hide while a non-floating window is open on that monitor's workspace
     // "always" = always auto-hide, "never" = always visible and reserves space
@@ -476,7 +490,7 @@ ShellRoot {
             { name: "Dock",         glyph: "dock",       c1: "#4FA8FF", c2: "#0A6CFF",
               keys: "size icon magnification zoom spacing margin distance edge" },
             { name: "Appearance",   glyph: "appearance", c1: "#636366", c2: "#1C1C1E",
-              keys: "theme dark light mode accent color glass translucency blur corner radius font" },
+              keys: "theme dark light mode accent color glass liquid apple style translucency blur corner radius font" },
             { name: "Behavior",     glyph: "behavior",   c1: "#4CD964", c2: "#26A844",
               keys: "hide auto labels tooltip indicators bounce animate trash display monitor delay" },
             { name: "Applications", glyph: "apps",       c1: "#FFB340", c2: "#FF9500",
@@ -1061,8 +1075,29 @@ ShellRoot {
                     t: pal
                     SRow {
                         t: pal
+                        title: "Dock style"
+                        subtitle: root.dockStyle === "liquid" && root.glassState === "failed"
+                                  ? "Liquid Glass couldn't start (install qt6-shadertools) – using Normal Blur"
+                                  : (root.dockStyle === "liquid" && root.glassState === "building"
+                                     ? "Preparing the Liquid Glass shader…"
+                                     : "Blur of the desktop, or refracting Liquid Glass")
+                        SSegmented {
+                            t: pal
+                            model: ["Normal Blur", "Apple Liquid Glass"]
+                            segWidth: 128
+                            current: root.dockStyle === "liquid" ? 1 : 0
+                            onPicked: i => root.dockStyle = (i === 1 ? "liquid" : "blur")
+                        }
+                    }
+                }
+
+                SCard {
+                    t: pal
+                    SRow {
+                        t: pal
                         title: "Translucency"
-                        subtitle: "How frosted the Dock's glass looks"
+                        subtitle: root.dockStyle === "liquid" ? "How much tint the glass adds over the refraction"
+                                                              : "How frosted the Dock's glass looks"
                         SSlider {
                             t: pal
                             from: 0.0; to: 0.85; stepSize: 0.01
@@ -1099,7 +1134,9 @@ ShellRoot {
                         }
                     }
                 }
-                SLabel { t: pal; text: "The blur behind the Dock comes from your Hyprland layer rule; translucency only controls the tint." }
+                SLabel { t: pal; text: root.dockStyle === "liquid"
+                                       ? "Liquid Glass refracts the wallpaper and windows behind the Dock in real time. Corner radius also shapes the glass."
+                                       : "The blur behind the Dock comes from your Hyprland layer rule; translucency only controls the tint." }
             }
         }
 
@@ -1392,14 +1429,14 @@ ShellRoot {
     function resetSettings() {
         iconSize = 52; magnification = 1.7; magnificationEnabled = true;
         spacing = 6; margin = 6; cornerRadius = 18;
-        darkMode = true; glassOpacity = 0.42; accent = "#0a84ff"; fontFamily = "Inter";
+        darkMode = true; glassOpacity = 0.42; dockStyle = "blur"; accent = "#0a84ff"; fontFamily = "Inter";
         hideMode = "smart"; hideDelay = 450; monitor = "";
         showTrash = true; showLabels = true; showIndicators = true; bounceOnLaunch = true; showThumbs = true;
     }
 
     // ── settings persistence (~/.config/macdock/settings.json) ──
     readonly property string settingsSig: [iconSize, magnification, magnificationEnabled, spacing, margin,
-        cornerRadius, darkMode, glassOpacity, String(accent), fontFamily, hideMode, hideDelay, monitor,
+        cornerRadius, darkMode, glassOpacity, dockStyle, wallpaperPath, String(accent), fontFamily, hideMode, hideDelay, monitor,
         showTrash, showLabels, showIndicators, bounceOnLaunch, showThumbs].join("|")
     property bool settingsReady: false
     onSettingsSigChanged: if (settingsReady) saveTimer.restart()
@@ -1409,7 +1446,9 @@ ShellRoot {
         var o = {
             iconSize: iconSize, magnification: magnification, magnificationEnabled: magnificationEnabled,
             spacing: spacing, margin: margin, cornerRadius: cornerRadius,
-            darkMode: darkMode, glassOpacity: glassOpacity, accent: String(accent), fontFamily: fontFamily,
+            darkMode: darkMode, glassOpacity: glassOpacity, dockStyle: dockStyle, wallpaperPath: wallpaperPath, glassDebug: glassDebug,
+            glassRim: glassRim, glassGrain: glassGrain, glassLiquid: glassLiquid,
+            accent: String(accent), fontFamily: fontFamily,
             hideMode: hideMode, hideDelay: hideDelay, monitor: monitor,
             showTrash: showTrash, showLabels: showLabels, showIndicators: showIndicators,
             bounceOnLaunch: bounceOnLaunch, showThumbs: showThumbs
@@ -1420,7 +1459,7 @@ ShellRoot {
     function applySettings(o) {
         if (!o || typeof o !== "object") return;
         var keys = ["iconSize", "magnification", "magnificationEnabled", "spacing", "margin", "cornerRadius",
-                    "darkMode", "glassOpacity", "accent", "fontFamily", "hideMode", "hideDelay", "monitor",
+                    "darkMode", "glassOpacity", "dockStyle", "wallpaperPath", "glassDebug", "glassRim", "glassGrain", "glassLiquid", "accent", "fontFamily", "hideMode", "hideDelay", "monitor",
                     "showTrash", "showLabels", "showIndicators", "bounceOnLaunch", "showThumbs"];
         for (var i = 0; i < keys.length; i++) {
             if (o[keys[i]] === undefined) continue;
@@ -1435,6 +1474,7 @@ ShellRoot {
         onLoaded: {
             try { root.applySettings(JSON.parse(text())); } catch (err) { }
             root.settingsReady = true;
+            if (root.dockStyle === "liquid") root.startGlass();
         }
         onLoadFailed: root.settingsReady = true
     }
@@ -1640,6 +1680,118 @@ ShellRoot {
         if (s !== lastSig) { lastSig = s; items = list; }
     }
 
+    // ═════════════ LIQUID GLASS BACKEND ═════════════
+    // glassState: "idle" → "building" (qsb running) → "ready" | "failed". "failed" falls back to Normal Blur.
+    property string glassState: "idle"
+    readonly property bool liquidActive: dockStyle === "liquid" && glassState === "ready"
+    readonly property string glassShaderSrc: decodeURIComponent(Qt.resolvedUrl("liquidglass.frag").toString().replace("file://", ""))
+    readonly property string glassShaderOut: configDir + "/liquidglass.frag.qsb"
+    readonly property url glassShaderUrl: "file://" + glassShaderOut
+
+    onDockStyleChanged: if (dockStyle === "liquid") startGlass()
+    onGlassStateChanged: console.log("[macdock-glass] state:", glassState)
+    function startGlass() {
+        if (glassState === "ready" || glassState === "building") return;
+        glassState = "building";
+        qsbProc.running = true;
+        wpProc.running = true;
+        refreshBusy();                 // monitor geometry for the window compositor
+    }
+    Process {
+        id: qsbProc
+        command: ["sh", "-c",
+            "mkdir -p \"$(dirname \"$2\")\"; "
+            + "for q in qsb qsb6 qsb-qt6 /usr/lib/qt6/bin/qsb /usr/lib64/qt6/bin/qsb /usr/lib/qt/bin/qsb; do "
+            + "  if command -v \"$q\" >/dev/null 2>&1; then \"$q\" --qt6 -o \"$2\" \"$1\" && exit 0; fi; "
+            + "done; "
+            + "[ -f \"$1.qsb\" ] && cp \"$1.qsb\" \"$2\" && exit 0; "
+            + "exit 1",
+            "sh", root.glassShaderSrc, root.glassShaderOut]
+        stderr: StdioCollector { onStreamFinished: if (text.trim() !== "") console.log("[macdock-glass] qsb:", text.trim()) }
+        onExited: (code, status) => root.glassState = (code === 0 ? "ready" : "failed")
+    }
+
+    // wallpaper the glass refracts. Sources, in order: wallpaperPath override, Noctalia's settings.toml
+    // ([wallpaper.monitors.<name>] → [wallpaper.last] → [wallpaper.default]), then awww/swww/hyprpaper.
+    property var wallpaperMap: ({})
+    onWallpaperMapChanged: console.log("[macdock-glass] wallpaper sources:", JSON.stringify(wallpaperMap))
+    function wallpaperFor(screenName) {
+        var p = wallpaperPath !== "" ? wallpaperPath
+              : (wallpaperMap["wallpaper.monitors." + screenName] || wallpaperMap["wallpaper.last"]
+                 || wallpaperMap["wallpaper.default"] || "");
+        if (p.indexOf("~/") === 0) p = Quickshell.env("HOME") + p.substring(1);
+        return p;
+    }
+    function fileUrl(p) {
+        if (p === "") return "";
+        if (p.indexOf("file://") === 0) return p;
+        return "file://" + encodeURI(p).replace(/#/g, "%23").replace(/\?/g, "%3F");
+    }
+    Process {
+        id: wpProc
+        command: ["sh", "-c",
+            ""
+            + "out=\"\"\n"
+            + "st=\"${XDG_STATE_HOME:-$HOME/.local/state}/noctalia\"; ns=\"${NOCTALIA_STATE_HOME:-/nonexistent}\"\n"
+            + "for f in \"$ns/settings.toml\" \"$st/settings.toml\" \"$HOME/.config/noctalia/settings.toml\" \"$HOME/.config/noctalia/config.toml\"; do\n"
+            + "  [ -f \"$f\" ] || continue\n"
+            + "  out=\"$out$(awk '\n"
+            + "    /^[ \\t]*\\[\\[/ { sec = \"\"; next }\n"
+            + "    /^[ \\t]*\\[/ { sec = $0; gsub(/[\\[\\] \\t\"]/, \"\", sec); next }\n"
+            + "    sec ~ /^wallpaper\\.(default|last|monitors\\..+)$/ && /^[ \\t]*path[ \\t]*=/ {\n"
+            + "      v = $0; sub(/^[^=]*=[ \\t]*\"/, \"\", v); sub(/\".*$/, \"\", v); print sec \"\\t\" v\n"
+            + "    }' \"$f\")\n"
+            + "\"\n"
+            + "done\n"
+            + "if [ -z \"$(printf %s \"$out\" | tr -d ' \\t\\n')\" ]; then\n"
+            + "  p=$(swww query 2>/dev/null | sed -n 's/.*image: //p' | head -n1)\n"
+            + "  [ -z \"$p\" ] && p=$(awww query 2>/dev/null | sed -n 's/.*image: //p' | head -n1)\n"
+            + "  [ -z \"$p\" ] && p=$(hyprctl hyprpaper listactive 2>/dev/null | head -n1 | sed 's/.*= //')\n"
+            + "  if [ -z \"$p\" ]; then f=\"$HOME/.config/hypr/hyprpaper.conf\"\n"
+            + "    [ -f \"$f\" ] && p=$(grep -E '^[[:space:]]*(path|wallpaper)[[:space:]]*=' \"$f\" | head -n1 | sed -E 's/^[^=]*=[[:space:]]*//; s/^[^,\\/]*,//')\n"
+            + "  fi\n"
+            + "  p=$(printf %s \"$p\" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')\n"
+            + "  [ -n \"$p\" ] && out=\"wallpaper.default	$p\"\n"
+            + "fi\n"
+            + "printf '%s' \"$out\"\n"
+        ]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var m = {}, lines = text.split("\n");
+                for (var i = 0; i < lines.length; i++) {
+                    var k = lines[i].indexOf("\t");
+                    if (k <= 0) continue;
+                    var key = lines[i].substring(0, k).trim(), val = lines[i].substring(k + 1).trim();
+                    if (val !== "" && m[key] === undefined) m[key] = val;
+                }
+                if (JSON.stringify(m) !== JSON.stringify(root.wallpaperMap)) root.wallpaperMap = m;
+            }
+        }
+    }
+    Timer { interval: 4000; repeat: true; running: root.liquidActive; onTriggered: if (!wpProc.running) wpProc.running = true }
+
+    // live window geometry for the backdrop compositor (polled only while Liquid Glass is on)
+    property var glassClients: []
+    Process {
+        id: glassProc
+        command: ["hyprctl", "-j", "clients"]
+        stdout: StdioCollector {
+            onStreamFinished: { try { root.glassClients = JSON.parse(text); } catch (err) { } }
+        }
+    }
+    Timer {
+        interval: 90
+        repeat: true
+        running: root.liquidActive
+        onTriggered: if (!glassProc.running) glassProc.running = true
+    }
+    function tlFor(addr) {
+        var a = String(addr).replace(/^0x/, "");
+        var ts = Hyprland.toplevels.values;
+        for (var i = 0; i < ts.length; i++) if (ts[i].address === a) return ts[i].wayland;
+        return null;
+    }
+
     // ── smart hide: which monitors have a non-floating window on their active workspace ──
     property var busyMonitors: ({})
     property var monData: []
@@ -1833,6 +1985,104 @@ ShellRoot {
                 }
                 Timer { id: hideTimer; interval: root.hideDelay; onTriggered: if (!ui.dragging) ui.revealed = false }
 
+                // ── Liquid Glass backdrop: wallpaper + the live windows behind the Dock, in screen coordinates ──
+                // Built from per-window captures (not a screen capture) so the Dock never ends up refracting itself.
+                Loader {
+                    id: glassBackdrop
+                    active: root.liquidActive
+                    sourceComponent: Item {
+                        id: bd
+                        x: 0
+                        y: -(win.modelData.height - ui.height)
+                        width: win.modelData.width
+                        height: win.modelData.height
+
+                        // placeholder until a wallpaper loads: deliberately colourful so a missing wallpaper is obvious
+                        Rectangle {
+                            anchors.fill: parent
+                            gradient: Gradient {
+                                orientation: Gradient.Horizontal
+                                GradientStop { position: 0.0; color: "#2f6bff" }
+                                GradientStop { position: 0.5; color: "#b44cff" }
+                                GradientStop { position: 1.0; color: "#ff8a3d" }
+                            }
+                        }
+                        Image {
+                            anchors.fill: parent
+                            visible: status === Image.Ready
+                            onStatusChanged: console.log("[macdock-glass] wallpaper image status:", status, "(1 = ready, 2 = loading, 3 = error)", source)
+                            source: root.fileUrl(root.wallpaperFor(win.modelData.name))
+                            fillMode: Image.PreserveAspectCrop
+                            asynchronous: true
+                            sourceSize.width: bd.width
+                            smooth: true
+                        }
+
+                        ListModel { id: wm }
+                        Repeater {
+                            model: wm
+                            delegate: Item {
+                                id: gw
+                                required property string addr
+                                required property real wx
+                                required property real wy
+                                required property real ww
+                                required property real wh
+                                required property real wz
+                                x: wx; y: wy; width: ww; height: wh; z: wz
+                                readonly property var tl: { root.windowTick; return root.tlFor(addr); }
+                                // only keep capturing windows that actually reach the Dock (+ refraction margin)
+                                readonly property bool near: !ui.tucked
+                                    && x < dock.x + dock.width + 48 && x + width > dock.x - 48
+                                    && y < dock.y + bd.height - ui.height + dock.height + 48
+                                    && y + height > dock.y + bd.height - ui.height - 48
+                                ScreencopyView {
+                                    anchors.fill: parent
+                                    captureSource: gw.tl
+                                    live: gw.near
+                                }
+                            }
+                        }
+
+                        function sync() {
+                            var mon = null;
+                            for (var i = 0; i < root.monData.length; i++)
+                                if (root.monData[i].name === win.modelData.name) mon = root.monData[i];
+                            if (!mon) return;
+                            var ws = [mon.activeWorkspace ? mon.activeWorkspace.id : -999];
+                            if (mon.specialWorkspace && mon.specialWorkspace.id !== 0) ws.push(mon.specialWorkspace.id);
+                            var zoneTop = bd.height - win.height;
+                            var want = {};
+                            var cs = root.glassClients;
+                            for (var c = 0; c < cs.length; c++) {
+                                var cl = cs[c];
+                                if (!cl.mapped || cl.hidden || cl.monitor !== mon.id || ws.indexOf(cl.workspace.id) < 0) continue;
+                                var x = cl.at[0] - mon.x, y = cl.at[1] - mon.y, w = cl.size[0], h = cl.size[1];
+                                if (x + w <= 0 || x >= bd.width || y + h <= zoneTop || y >= bd.height) continue;
+                                var z = cl.floating ? 100 - Math.min(cl.focusHistoryID, 90) : 0;   // floating on top, most recently focused highest
+                                want[cl.address] = { addr: cl.address, wx: x, wy: y, ww: w, wh: h, wz: z };
+                            }
+                            for (var j = wm.count - 1; j >= 0; j--) {
+                                var a = wm.get(j).addr;
+                                if (want[a] === undefined) wm.remove(j);
+                                else { wm.set(j, want[a]); delete want[a]; }
+                            }
+                            for (var k in want) wm.append(want[k]);
+                            if (wm.count !== bd.lastCount) {
+                                bd.lastCount = wm.count;
+                                console.log("[macdock-glass] windows behind the dock on", win.modelData.name + ":", wm.count);
+                            }
+                        }
+                        property int lastCount: -1
+                        Connections {
+                            target: root
+                            function onGlassClientsChanged() { bd.sync(); }
+                            function onMonDataChanged() { bd.sync(); }
+                        }
+                        Component.onCompleted: sync()
+                    }
+                }
+
                 Item {
                     id: maskItem
                     x: ui.menuOpen ? 0 : dock.x
@@ -1849,7 +2099,61 @@ ShellRoot {
                     y: ui.height - root.margin - height + (ui.tucked ? height + root.margin + 6 : 0)
                     Behavior on y { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
 
+                    // ── Apple Liquid Glass: real-time refraction of the backdrop (see liquidglass.frag) ──
+                    Loader {
+                        id: glassLayer
+                        anchors.fill: parent
+                        active: root.liquidActive
+                        sourceComponent: Item {
+                            readonly property real margin: 48      // extra backdrop captured around the Dock (refraction + blur reach)
+                            readonly property real padPx: 10       // shader item padding (drop shadow)
+                            ShaderEffectSource {
+                                id: bsrc
+                                sourceItem: glassBackdrop.item
+                                hideSource: true
+                                live: !ui.tucked
+                                visible: false
+                                sourceRect: Qt.rect(dock.x - parent.padPx - parent.margin,
+                                                    dock.y + (win.modelData.height - ui.height) - parent.padPx - parent.margin,
+                                                    dock.width + 2 * (parent.padPx + parent.margin),
+                                                    dock.height + 2 * (parent.padPx + parent.margin))
+                            }
+                            ShaderEffect {
+                                id: glassFx
+                                x: -padPx; y: -padPx
+                                width: dock.width + 2 * padPx
+                                height: dock.height + 2 * padPx
+                                fragmentShader: root.glassShaderUrl
+                                onStatusChanged: {
+                                    console.log("[macdock-glass] shader status:", status, "(0 = compiled, 1 = uncompiled, 2 = error)", log);
+                                    if (status === ShaderEffect.Error) root.glassState = "failed";
+                                }
+
+                                property variant src: bsrc
+                                property real padPx: parent.padPx
+                                property vector2d itemSize: Qt.vector2d(width, height)
+                                property vector2d glassSize: Qt.vector2d(dock.width, dock.height)
+                                property vector2d srcSize: Qt.vector2d(bsrc.sourceRect.width, bsrc.sourceRect.height)
+                                property vector2d srcOffset: Qt.vector2d(parent.margin, parent.margin)
+                                property real pad: padPx
+                                property real radius: root.cornerRadius
+                                property real bezel: Math.min(dock.height * 0.36, 26)
+                                property real thickness: 30 * root.glassLiquid
+                                property real dispersion: 0.06 * root.glassLiquid
+                                property real magnify: 0.08 * root.glassLiquid
+                                property real rim: root.glassRim
+                                property real grain: root.glassGrain
+                                property real blurPx: 5
+                                property real tintMix: root.glassOpacity * 0.55
+                                property real saturation: 1.25
+                                property real dark: root.darkMode ? 1 : 0
+                                property real debug: root.glassDebug ? 1 : 0
+                            }
+                        }
+                    }
+
                     Rectangle {
+                        visible: !root.liquidActive
                         anchors.fill: parent
                         radius: root.cornerRadius
                         color: root.darkMode ? Qt.rgba(0.10, 0.10, 0.11, root.glassOpacity)
